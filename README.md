@@ -8,7 +8,6 @@ Velocity is a tiny (under 2kb), zero-dependency HTTP client that simplifies requ
 
 [![NPM Version](https://img.shields.io/npm/v/velocity-http.svg?style=flat-square)](https://www.npmjs.com/package/velocity-http)
 [![Bundle Size](https://img.shields.io/bundlephobia/minzip/velocity-http.svg?style=flat-square)](https://bundlephobia.com/package/velocity-http)
-[![License](https://img.shields.io/npm/l/velocity-http.svg?style=flat-square)](https://github.com/kamlesh-Sahani/velocity-http/blob/main/LICENSE)
 
 ---
 
@@ -33,6 +32,7 @@ npm install velocity-http
 ## 🚀 Quick Start
 
 ### 1. Initialize
+
 ```typescript
 import Velocity from "velocity-http";
 
@@ -40,15 +40,17 @@ const api = new Velocity({ baseURL: "https://api.example.com" });
 ```
 
 ### 2. Add a Hook (Checkpoints)
+
 ```typescript
 // Add a token to every request
 api.onRequest((config) => ({
   ...config,
-  headers: { ...config.headers, Authorization: "Bearer TOKEN" }
+  headers: { ...config.headers, Authorization: "Bearer TOKEN" },
 }));
 ```
 
 ### 3. Make Requests
+
 ```typescript
 // Simple GET
 const users = await api.get("/users");
@@ -58,7 +60,7 @@ await api.post("/users", { name: "Kamlesh Sahani" });
 
 // Polling until ready
 const job = await api.get("/job/1", {
-  poll: { interval: 2000, validate: (data) => data.status === "DONE" }
+  poll: { interval: 2000, validate: (data) => data.status === "DONE" },
 });
 ```
 
