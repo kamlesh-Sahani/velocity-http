@@ -27,7 +27,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kamlesh-Sahani/velocity-http"
+    "url": "git+https://github.com/kamlesh-Sahani/velocity-http.git"
   },
   "devDependencies": {
     "tsup": "^8.5.1",
