@@ -1,0 +1,36 @@
+{
+  "name": "velocity-http",
+  "version": "1.0.0",
+  "description": "The lightweight, universal HTTP client with built-in sequential polling and simple hooks.",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "http",
+    "client",
+    "fetch",
+    "api",
+    "polling",
+    "hooks",
+    "typescript",
+    "lightweight"
+  ],
+  "author": "Kamlesh Sahani",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kamlesh-Sahani/velocity-http"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  }
+}
