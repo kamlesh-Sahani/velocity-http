@@ -9,7 +9,11 @@ export type Method =
 
 export interface PollOptions<T = any> {
   interval: number;
-  validate: (data: T) => boolean;
+  validate: (
+    data: T,
+    response: VelocityResponse<T>,
+    attempts: number,
+  ) => boolean | Promise<boolean>;
   maxAttempts?: number;
 }
 

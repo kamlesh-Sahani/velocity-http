@@ -12,6 +12,7 @@ export class Velocity {
   private isBusy = false;
   private _onRequest?: RequestHook;
   private _onResponse?: ResponseHook;
+  private pollingAbortController?: AbortController;
 
   constructor(config: VelocityConfig = {}) {
     this.config = {
@@ -28,20 +29,50 @@ export class Velocity {
     this._onResponse = hook;
   }
 
-  async request<T = any>(
-    config: VelocityConfig,
-  ): Promise<VelocityResponse<T> | any> {
-    const isPolling = isNotEmptObject(config.poll);
+  // Method to cancel ongoing polling
+  cancelPolling() {
+    if (this.pollingAbortController) {
+      this.pollingAbortController.abort();
+      this.pollingAbortController = undefined;
+      this.isBusy = false;
+    }
+  }
 
-    if (isPolling && this.isBusy) return;
-    if (isPolling) this.isBusy = true;
+  async request<T = any>(config: VelocityConfig): Promise<VelocityResponse<T>> {
+    const isPolling = isNotEmptObject(config?.poll);
+
+    if (isPolling && this.isBusy) {
+      throw new Error("Polling request already in progress");
+    }
+
+    if (isPolling) {
+      this.isBusy = true;
+      this.pollingAbortController = new AbortController();
+    }
+
+    let abortHandler: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
       let attempts = 0;
+      let shouldStop = false;
+
+      // Listen for polling cancellation
+      if (isPolling && this.pollingAbortController) {
+        this.pollingAbortController.signal.addEventListener("abort", () => {
+          shouldStop = true;
+        });
+      }
 
       const execute = async (): Promise<VelocityResponse<T>> => {
+        // Check for cancellation
+        if (shouldStop) {
+          throw new Error("Polling cancelled");
+        }
+
         attempts++;
 
+        // Merge headers properly
         const mergedHeaders = new Headers(this.config?.headers);
         if (config.headers) {
           const requestHeaders = new Headers(config.headers);
@@ -61,27 +92,62 @@ export class Velocity {
           mergedConfig.credentials = "include";
         }
 
-        // Run request hook
+        // Run request hook with error handling
         if (this._onRequest) {
-          mergedConfig = await this._onRequest(mergedConfig);
+          try {
+            mergedConfig = await this._onRequest(mergedConfig);
+          } catch (error) {
+            console.error("Request hook failed:", error);
+            throw error;
+          }
         }
 
+        // Setup abort controller with timeout
         const controller = new AbortController();
-        const timeoutId = setTimeout(
+        timeoutId = setTimeout(
           () => controller.abort(),
           mergedConfig.timeout || 50000,
         );
 
+        // Handle external signal with cleanup
+        if (mergedConfig.signal) {
+          if (mergedConfig.signal.aborted) {
+            controller.abort();
+          } else {
+            abortHandler = () => controller.abort();
+            mergedConfig.signal.addEventListener("abort", abortHandler);
+          }
+        }
+
+        // Handle polling cancellation signal
+        if (isPolling && this.pollingAbortController) {
+          const pollingAbortHandler = () => controller.abort();
+          this.pollingAbortController.signal.addEventListener(
+            "abort",
+            pollingAbortHandler,
+          );
+        }
+
         try {
-          const url = this.prepareURL(mergedConfig);
-          const res = await fetch(url, {
+          const { baseURL, url = "", params } = mergedConfig;
+          let rawUrl = url;
+          if (baseURL && !url.startsWith("http")) {
+            rawUrl = baseURL.replace(/\/$/, "") + "/" + url.replace(/^\//, "");
+          }
+          const finalUrl = buildURL(rawUrl, params);
+          const res = await fetch(finalUrl, {
             ...mergedConfig,
             signal: controller.signal,
           } as RequestInit);
 
-          const dataPromise = res.clone();
-          
+          // Clear timeout as request completed
+          clearTimeout(timeoutId!);
+          timeoutId = null;
+
+          // Parse response data efficiently
           let data: any;
+          const contentType = res.headers.get("content-type");
+
           if (mergedConfig.responseType === "blob") {
             data = await res.blob();
           } else if (mergedConfig.responseType === "arrayBuffer") {
@@ -89,59 +155,101 @@ export class Velocity {
           } else if (mergedConfig.responseType === "text") {
             data = await res.text();
           } else {
-            data = await res.json().catch(() => dataPromise.text());
+            // Default to JSON parsing with fallback to text
+            const text = await res.text();
+            if (text.trim() === "") {
+              data = null;
+            } else if (
+              mergedConfig.responseType === "json" ||
+              (contentType?.includes("application/json") &&
+                !mergedConfig.responseType)
+            ) {
+              try {
+                data = JSON.parse(text);
+              } catch {
+                data = text; // Fallback to text if JSON parsing fails
+              }
+            } else {
+              data = text;
+            }
           }
-          
-          clearTimeout(timeoutId);
 
-          let response: VelocityResponse = {
+          let response: VelocityResponse<T> = {
             data,
             status: res.status,
             statusText: res.statusText,
             headers: res.headers,
             config: mergedConfig,
-          };
+          } as VelocityResponse<T>;
 
-          // Run response hook
+          // Run response hook with error handling
           if (this._onResponse) {
-            response = await this._onResponse(response);
+            try {
+              response = await this._onResponse(response);
+            } catch (error) {
+              console.error("Response hook failed:", error);
+              // Continue with original response
+            }
           }
 
+          // Handle polling logic
           const { poll } = mergedConfig;
-          if (isNotEmptObject(poll)) {
-            const { validate, interval, maxAttempts } = poll as PollOptions;
-            const isDone =
-              typeof validate === "function" && validate(response.data);
+          if (isNotEmptObject(poll) && !shouldStop) {
+            const pollOptions = poll as PollOptions;
+            const { validate, interval, maxAttempts = 10 } = pollOptions;
+
+            // Validate if polling should stop
+            let isDone = false;
+            if (typeof validate === "function") {
+              try {
+                isDone = await validate(data, response, attempts);
+              } catch (error) {
+                console.error("Poll validate function failed:", error);
+                isDone = true; // Stop polling on error
+              }
+            }
+
             const reachedLimit = maxAttempts && attempts >= maxAttempts;
 
             if (!isDone && !reachedLimit) {
               await new Promise((resolve) => setTimeout(resolve, interval));
-              return execute();
+              return execute(); // Recursive poll
             }
           }
 
-          return response as VelocityResponse<T>;
+          return response;
         } catch (error) {
-          clearTimeout(timeoutId);
+          clearTimeout(timeoutId!);
+          timeoutId = null;
           throw error;
+        } finally {
+          // Clean up abort handler
+          if (abortHandler && mergedConfig?.signal) {
+            mergedConfig.signal.removeEventListener("abort", abortHandler);
+            abortHandler = null;
+          }
         }
       };
 
       return await execute();
     } finally {
-      if (isPolling) this.isBusy = false;
+      if (isPolling) {
+        this.isBusy = false;
+        if (this.pollingAbortController) {
+          this.pollingAbortController = undefined;
+        }
+      }
+      // Final cleanup
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
-  private prepareURL(config: VelocityConfig): string {
-    let { url = "", baseURL, params } = config;
-    if (baseURL && !url.startsWith("http")) {
-      url = baseURL + url;
-    }
-    return buildURL(url, params);
-  }
-
-  get<T = any>(url: string, config?: VelocityConfig) {
+  get<T = any>(
+    url: string,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({ ...config, method: "GET", url });
   }
 
@@ -154,11 +262,22 @@ export class Velocity {
       data instanceof URLSearchParams
     )
       return data;
-    if (typeof data === "object") return JSON.stringify(data);
+    if (typeof data === "object") {
+      try {
+        return JSON.stringify(data);
+      } catch (error) {
+        console.error("Failed to stringify body:", error);
+        return data;
+      }
+    }
     return data;
   }
 
-  post<T = any>(url: string, data?: any, config?: VelocityConfig) {
+  post<T = any>(
+    url: string,
+    data?: any,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({
       ...config,
       method: "POST",
@@ -167,7 +286,11 @@ export class Velocity {
     });
   }
 
-  put<T = any>(url: string, data?: any, config?: VelocityConfig) {
+  put<T = any>(
+    url: string,
+    data?: any,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({
       ...config,
       method: "PUT",
@@ -176,7 +299,11 @@ export class Velocity {
     });
   }
 
-  patch<T = any>(url: string, data?: any, config?: VelocityConfig) {
+  patch<T = any>(
+    url: string,
+    data?: any,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({
       ...config,
       method: "PATCH",
@@ -185,15 +312,24 @@ export class Velocity {
     });
   }
 
-  delete<T = any>(url: string, config?: VelocityConfig) {
+  delete<T = any>(
+    url: string,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({ ...config, method: "DELETE", url });
   }
 
-  head<T = any>(url: string, config?: VelocityConfig) {
+  head<T = any>(
+    url: string,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({ ...config, method: "HEAD", url });
   }
 
-  options<T = any>(url: string, config?: VelocityConfig) {
+  options<T = any>(
+    url: string,
+    config?: VelocityConfig,
+  ): Promise<VelocityResponse<T>> {
     return this.request<T>({ ...config, method: "OPTIONS", url });
   }
 }

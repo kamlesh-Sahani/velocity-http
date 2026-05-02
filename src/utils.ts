@@ -1,4 +1,7 @@
-export function buildURL(url: string, params?: Record<string, any>): string {
+export function buildURL(
+  url: string = "",
+  params?: Record<string, any>,
+): string {
   if (!params) return url;
   const serialized = Object.entries(params || {})
     .map(
