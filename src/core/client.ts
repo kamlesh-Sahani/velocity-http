@@ -42,12 +42,24 @@ export class Velocity {
       const execute = async (): Promise<VelocityResponse<T>> => {
         attempts++;
 
-        const { headers = {}, ...restConfig } = config;
+        const mergedHeaders = new Headers(this.config?.headers);
+        if (config.headers) {
+          const requestHeaders = new Headers(config.headers);
+          requestHeaders.forEach((value, key) => {
+            mergedHeaders.set(key, value);
+          });
+        }
+
+        const { headers, ...restConfig } = config;
         let mergedConfig: VelocityConfig = {
           ...this.config,
           ...restConfig,
-          headers: { ...(this.config?.headers || {}), ...headers },
+          headers: mergedHeaders,
         };
+
+        if (mergedConfig.withCredentials) {
+          mergedConfig.credentials = "include";
+        }
 
         // Run request hook
         if (this._onRequest) {
@@ -67,7 +79,19 @@ export class Velocity {
             signal: controller.signal,
           } as RequestInit);
 
-          const data = await res.json().catch(() => res.text());
+          const dataPromise = res.clone();
+          
+          let data: any;
+          if (mergedConfig.responseType === "blob") {
+            data = await res.blob();
+          } else if (mergedConfig.responseType === "arrayBuffer") {
+            data = await res.arrayBuffer();
+          } else if (mergedConfig.responseType === "text") {
+            data = await res.text();
+          } else {
+            data = await res.json().catch(() => dataPromise.text());
+          }
+          
           clearTimeout(timeoutId);
 
           let response: VelocityResponse = {

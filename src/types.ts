@@ -17,10 +17,15 @@ export interface VelocityConfig extends Omit<RequestInit, "method"> {
   baseURL?: string;
   url?: string;
   method?: Method;
-  headers?: Record<string, string>;
+  headers?: HeadersInit;
   params?: Record<string, string | number | boolean>;
   timeout?: number;
   poll?: PollOptions;
+  responseType?: "json" | "text" | "blob" | "arrayBuffer";
+  signal?: AbortSignal;
+  meta?: Record<string, any>;
+  withCredentials?: boolean;
+  credentials?: RequestCredentials;
 }
 
 export interface VelocityResponse<T = any> {
