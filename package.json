@@ -1,6 +1,6 @@
 {
   "name": "velocity-http",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A lightweight, zero-dependency universal HTTP client and fetch wrapper with built-in sequential polling, interceptor hooks, and full TypeScript support. A modern alternative to Axios.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
