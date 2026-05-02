@@ -18,6 +18,7 @@ Velocity is a tiny (under 2kb), zero-dependency HTTP client that simplifies requ
 - **🔄 Smart Polling**: Built-in sequential polling with automatic busy-locks.
 - **🔷 TypeScript**: Full type safety for requests and responses.
 - **🌍 Universal**: Works in Browser, Node.js, and Edge.
+- **🛠️ Native Fetch API**: Full support for native `HeadersInit` and flexible `responseType` parsing.
 
 ---
 
@@ -43,10 +44,12 @@ const api = new Velocity({ baseURL: "https://api.example.com" });
 
 ```typescript
 // Add a token to every request
-api.onRequest((config) => ({
-  ...config,
-  headers: { ...config.headers, Authorization: "Bearer TOKEN" },
-}));
+api.onRequest((config) => {
+  return {
+    ...config,
+    headers: { ...config.headers, Authorization: "Bearer TOKEN" },
+  };
+});
 ```
 
 ### 3. Make Requests
