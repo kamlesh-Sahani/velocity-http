@@ -1,7 +1,7 @@
 {
   "name": "velocity-http",
-  "version": "1.4.0",
-  "description": "A lightweight, zero-dependency universal HTTP client and fetch wrapper with built-in sequential polling, interceptor hooks, and full TypeScript support. A modern alternative to Axios.",
+  "version": "1.5.0",
+  "description": "A lightweight, zero-dependency universal HTTP client and fetch wrapper with built-in sequential polling, retry, interceptor hooks, timeout, cancellation, and full TypeScript support. A modern alternative to Axios.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -20,9 +20,11 @@
   "files": [
     "dist"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
     "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
+    "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -38,30 +40,25 @@
     "rest",
     "api",
     "polling",
+    "sequential-polling",
     "hooks",
     "interceptors",
+    "retry",
+    "retry-request",
+    "timeout",
+    "cancellation",
+    "abort-controller",
+    "abort-signal",
     "typescript",
     "lightweight",
     "zero-dependency",
     "axios-alternative",
-    "axios",
-    "pooling",
-    "sequential-polling",
-    "retry",
-    "interceptor",
-    "retry-interceptor",
-    "retry-request",
-    "timeout",
-    "timeout-interceptor",
-    "timeout-request",
-    "cancellation",
-    "abort-controller",
-    "abort-request",
-    "sequence",
-    "sequential-requests",
-    "batch",
+    "isomorphic",
+    "universal",
+    "node",
+    "browser",
     "promise",
-    "promise-wrapper"
+    "async"
   ],
   "author": "Kamlesh Sahani",
   "license": "MIT",
@@ -69,8 +66,15 @@
     "type": "git",
     "url": "git+https://github.com/kamlesh-Sahani/velocity-http.git"
   },
+  "bugs": {
+    "url": "https://github.com/kamlesh-Sahani/velocity-http/issues"
+  },
+  "homepage": "https://github.com/kamlesh-Sahani/velocity-http#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "tsup": "^8.5.1",
-    "typescript": "^6.0.3"
+    "typescript": "^5.8.3"
   }
 }

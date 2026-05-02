@@ -1,18 +1,43 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  Velocity – Core HTTP Client
+// ─────────────────────────────────────────────────────────────────────────────
+
 import {
   VelocityConfig,
   VelocityResponse,
+  VelocityError,
   RequestHook,
   ResponseHook,
   PollOptions,
+  RetryOptions,
 } from "../types";
-import { buildURL, isNotEmptObject } from "../utils";
+import { buildURL, isNonEmptyObject, joinURL, sleep } from "../utils";
+
+// Default retry-able status codes
+const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504];
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 10;
+const DEFAULT_POLL_INTERVAL = 1_000;
+const DEFAULT_RETRY_DELAY = 0;
 
 export class Velocity {
+  // ── Instance state ──────────────────────────────────────────────────────────
+
   public config: VelocityConfig;
-  private isBusy = false;
-  private _onRequest?: RequestHook;
-  private _onResponse?: ResponseHook;
-  private pollingAbortController?: AbortController;
+
+  /** True while a polling sequence is running. */
+  private _pollingBusy = false;
+
+  /** AbortController that cancels the active polling sequence. */
+  private _pollingAC?: AbortController;
+
+  /** Ordered list of request interceptors. */
+  private _requestHooks: RequestHook[] = [];
+
+  /** Ordered list of response interceptors. */
+  private _responseHooks: ResponseHook[] = [];
+
+  // ── Constructor ─────────────────────────────────────────────────────────────
 
   constructor(config: VelocityConfig = {}) {
     this.config = {
@@ -21,315 +46,501 @@ export class Velocity {
     };
   }
 
-  onRequest(hook: RequestHook) {
-    this._onRequest = hook;
+  // ── Interceptors ────────────────────────────────────────────────────────────
+
+  /**
+   * Registers a request interceptor.
+   * Interceptors run in registration order before every request.
+   * Returns an object with an `eject()` method to remove the hook.
+   */
+  onRequest(hook: RequestHook): { eject: () => void } {
+    this._requestHooks.push(hook);
+    return {
+      eject: () => {
+        this._requestHooks = this._requestHooks.filter((h) => h !== hook);
+      },
+    };
   }
 
-  onResponse(hook: ResponseHook) {
-    this._onResponse = hook;
+  /**
+   * Registers a response interceptor.
+   * Interceptors run in registration order after every successful response.
+   * Returns an object with an `eject()` method to remove the hook.
+   */
+  onResponse(hook: ResponseHook): { eject: () => void } {
+    this._responseHooks.push(hook);
+    return {
+      eject: () => {
+        this._responseHooks = this._responseHooks.filter((h) => h !== hook);
+      },
+    };
   }
 
-  // Method to cancel ongoing polling
-  cancelPolling() {
-    if (this.pollingAbortController) {
-      this.pollingAbortController.abort();
-      this.pollingAbortController = undefined;
-      this.isBusy = false;
+  // ── Polling control ─────────────────────────────────────────────────────────
+
+  /**
+   * Cancels an active polling sequence.
+   * Safe to call when no polling is in progress.
+   */
+  cancelPolling(): void {
+    if (this._pollingAC) {
+      this._pollingAC.abort();
+      this._pollingAC = undefined;
+      this._pollingBusy = false;
     }
   }
 
-  async request<T = any>(config: VelocityConfig): Promise<VelocityResponse<T>> {
-    const isPolling = isNotEmptObject(config?.poll);
+  // ── Core request ────────────────────────────────────────────────────────────
 
-    if (isPolling && this.isBusy) {
-      throw new Error("Polling request already in progress");
+  async request<T = any>(
+    config: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> {
+    const isPolling = isNonEmptyObject(config?.poll);
+
+    // Guard against concurrent polling
+    if (isPolling && this._pollingBusy) {
+      throw new VelocityError(
+        "PollingError",
+        "A polling request is already in progress. Call cancelPolling() first.",
+        config,
+      );
     }
 
     if (isPolling) {
-      this.isBusy = true;
-      this.pollingAbortController = new AbortController();
+      this._pollingBusy = true;
+      this._pollingAC = new AbortController();
     }
-
-    let abortHandler: (() => void) | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
-      let attempts = 0;
-      let shouldStop = false;
-
-      // Listen for polling cancellation
-      if (isPolling && this.pollingAbortController) {
-        this.pollingAbortController.signal.addEventListener("abort", () => {
-          shouldStop = true;
-        });
-      }
-
-      const execute = async (): Promise<VelocityResponse<T>> => {
-        // Check for cancellation
-        if (shouldStop) {
-          throw new Error("Polling cancelled");
-        }
-
-        attempts++;
-
-        // Merge headers properly
-        const mergedHeaders = new Headers(this.config?.headers);
-        if (config.headers) {
-          const requestHeaders = new Headers(config.headers);
-          requestHeaders.forEach((value, key) => {
-            mergedHeaders.set(key, value);
-          });
-        }
-
-        const { headers, ...restConfig } = config;
-        let mergedConfig: VelocityConfig = {
-          ...this.config,
-          ...restConfig,
-          headers: mergedHeaders,
-        };
-
-        if (mergedConfig.withCredentials) {
-          mergedConfig.credentials = "include";
-        }
-
-        // Run request hook with error handling
-        if (this._onRequest) {
-          try {
-            mergedConfig = await this._onRequest(mergedConfig);
-          } catch (error) {
-            console.error("Request hook failed:", error);
-            throw error;
-          }
-        }
-
-        // Setup abort controller with timeout
-        const controller = new AbortController();
-        timeoutId = setTimeout(
-          () => controller.abort(),
-          mergedConfig.timeout || 50000,
-        );
-
-        // Handle external signal with cleanup
-        if (mergedConfig.signal) {
-          if (mergedConfig.signal.aborted) {
-            controller.abort();
-          } else {
-            abortHandler = () => controller.abort();
-            mergedConfig.signal.addEventListener("abort", abortHandler);
-          }
-        }
-
-        // Handle polling cancellation signal
-        if (isPolling && this.pollingAbortController) {
-          const pollingAbortHandler = () => controller.abort();
-          this.pollingAbortController.signal.addEventListener(
-            "abort",
-            pollingAbortHandler,
-          );
-        }
-
-        try {
-          const { baseURL, url = "", params } = mergedConfig;
-          let rawUrl = url;
-          if (baseURL && !url.startsWith("http")) {
-            rawUrl = baseURL.replace(/\/$/, "") + "/" + url.replace(/^\//, "");
-          }
-          const finalUrl = buildURL(rawUrl, params);
-          const res = await fetch(finalUrl, {
-            ...mergedConfig,
-            signal: controller.signal,
-          } as RequestInit);
-
-          // Clear timeout as request completed
-          clearTimeout(timeoutId!);
-          timeoutId = null;
-
-          // Parse response data efficiently
-          let data: any;
-          const contentType = res.headers.get("content-type");
-
-          if (mergedConfig.responseType === "blob") {
-            data = await res.blob();
-          } else if (mergedConfig.responseType === "arrayBuffer") {
-            data = await res.arrayBuffer();
-          } else if (mergedConfig.responseType === "text") {
-            data = await res.text();
-          } else {
-            // Default to JSON parsing with fallback to text
-            const text = await res.text();
-            if (text.trim() === "") {
-              data = null;
-            } else if (
-              mergedConfig.responseType === "json" ||
-              (contentType?.includes("application/json") &&
-                !mergedConfig.responseType)
-            ) {
-              try {
-                data = JSON.parse(text);
-              } catch {
-                data = text; // Fallback to text if JSON parsing fails
-              }
-            } else {
-              data = text;
-            }
-          }
-
-          let response: VelocityResponse<T> = {
-            data,
-            status: res.status,
-            statusText: res.statusText,
-            headers: res.headers,
-            config: mergedConfig,
-          } as VelocityResponse<T>;
-
-          // Run response hook with error handling
-          if (this._onResponse) {
-            try {
-              response = await this._onResponse(response);
-            } catch (error) {
-              console.error("Response hook failed:", error);
-              // Continue with original response
-            }
-          }
-
-          // Handle polling logic
-          const { poll } = mergedConfig;
-          if (isNotEmptObject(poll) && !shouldStop) {
-            const pollOptions = poll as PollOptions;
-            const { validate, interval, maxAttempts = 10 } = pollOptions;
-
-            // Validate if polling should stop
-            let isDone = false;
-            if (typeof validate === "function") {
-              try {
-                isDone = await validate(data, response, attempts);
-              } catch (error) {
-                console.error("Poll validate function failed:", error);
-                isDone = true; // Stop polling on error
-              }
-            }
-
-            const reachedLimit = maxAttempts && attempts >= maxAttempts;
-
-            if (!isDone && !reachedLimit) {
-              await new Promise((resolve) => setTimeout(resolve, interval));
-              return execute(); // Recursive poll
-            }
-          }
-
-          return response;
-        } catch (error) {
-          clearTimeout(timeoutId!);
-          timeoutId = null;
-          throw error;
-        } finally {
-          // Clean up abort handler
-          if (abortHandler && mergedConfig?.signal) {
-            mergedConfig.signal.removeEventListener("abort", abortHandler);
-            abortHandler = null;
-          }
-        }
-      };
-
-      return await execute();
+      return await this._executeWithRetry<T>(config, isPolling);
     } finally {
       if (isPolling) {
-        this.isBusy = false;
-        if (this.pollingAbortController) {
-          this.pollingAbortController = undefined;
-        }
-      }
-      // Final cleanup
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+        this._pollingBusy = false;
+        this._pollingAC = undefined;
       }
     }
   }
 
-  get = <T = any>(
-    url: string,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({ ...config, method: "GET", url });
+  // ── Retry wrapper ───────────────────────────────────────────────────────────
+
+  private async _executeWithRetry<T>(
+    config: VelocityConfig<T>,
+    isPolling: boolean,
+  ): Promise<VelocityResponse<T>> {
+    const retry = config.retry ?? this.config.retry;
+    const maxRetries = retry?.attempts ?? 0;
+    const retryDelay = retry?.delay ?? DEFAULT_RETRY_DELAY;
+    const retryStatuses = retry?.statuses ?? DEFAULT_RETRY_STATUSES;
+
+    let attempt = 0;
+
+    while (true) {
+      attempt++;
+
+      try {
+        const response = await this._executeSingle<T>(
+          config,
+          isPolling,
+          attempt,
+        );
+
+        // Check whether this response should be retried
+        if (attempt <= maxRetries) {
+          const shouldRetry = retry?.shouldRetry
+            ? retry.shouldRetry(response, attempt)
+            : retryStatuses.includes(response.status);
+
+          if (shouldRetry) {
+            if (retryDelay > 0) {
+              await sleep(retryDelay, config.signal);
+            }
+            continue; // retry
+          }
+        }
+
+        return response;
+      } catch (err: any) {
+        // Do not retry cancellations or user-aborts
+        const isCancelOrTimeout =
+          err instanceof VelocityError &&
+          (err.kind === "CancelError" || err.kind === "TimeoutError");
+
+        if (isCancelOrTimeout || attempt > maxRetries) {
+          throw err;
+        }
+
+        // Network-level error — wait then retry
+        if (retryDelay > 0) {
+          await sleep(retryDelay, config.signal);
+        }
+      }
+    }
   }
 
-  private prepareBody(data: any): any {
+  // ── Single fetch attempt ────────────────────────────────────────────────────
+
+  private async _executeSingle<T>(
+    config: VelocityConfig<T>,
+    isPolling: boolean,
+    _attempt: number,
+  ): Promise<VelocityResponse<T>> {
+    // ── 1. Merge configs ──────────────────────────────────────────────────────
+
+    const mergedHeaders = this._mergeHeaders(
+      this.config.headers,
+      config.headers,
+    );
+
+    const { headers: _h, signal: _s, ...restConfig } = config;
+    let mergedConfig: VelocityConfig<T> = {
+      ...this.config,
+      ...restConfig,
+      headers: mergedHeaders,
+    };
+
+    if (mergedConfig.withCredentials) {
+      mergedConfig.credentials = "include";
+    }
+
+    // ── 2. Run request interceptors ───────────────────────────────────────────
+
+    for (const hook of this._requestHooks) {
+      try {
+        mergedConfig = (await hook(mergedConfig)) as VelocityConfig<T>;
+      } catch (hookErr) {
+        throw new VelocityError(
+          "NetworkError",
+          `Request interceptor threw: ${(hookErr as Error).message}`,
+          mergedConfig,
+        );
+      }
+    }
+
+    // ── 3. Build URL ──────────────────────────────────────────────────────────
+
+    const { baseURL, url = "", params } = mergedConfig;
+    const rawUrl =
+      baseURL && !url.startsWith("http") ? joinURL(baseURL, url) : url;
+    const finalUrl = buildURL(rawUrl, params);
+
+    // ── 4. Compose abort signal ───────────────────────────────────────────────
+
+    const { signal: externalSignal } = config;
+    const timeoutMs = mergedConfig.timeout ?? DEFAULT_TIMEOUT_MS;
+
+    // Combine: timeout  +  user signal  +  polling cancel signal
+    const signals: AbortSignal[] = [];
+
+    const timeoutAC = new AbortController();
+    const timeoutId = setTimeout(
+      () =>
+        timeoutAC.abort(
+          new VelocityError(
+            "TimeoutError",
+            `Request timed out after ${timeoutMs}ms`,
+            mergedConfig,
+          ),
+        ),
+      timeoutMs,
+    );
+    signals.push(timeoutAC.signal);
+
+    if (externalSignal) signals.push(externalSignal);
+    if (isPolling && this._pollingAC) signals.push(this._pollingAC.signal);
+
+    const combinedSignal =
+      signals.length > 1
+        ? AbortSignal.any(signals) // native; available in all modern browsers / Node 20+
+        : signals[0];
+
+    // ── 5. Fetch ──────────────────────────────────────────────────────────────
+
+    let res: Response;
+
+    try {
+      res = await fetch(finalUrl, {
+        ...mergedConfig,
+        signal: combinedSignal,
+      } as RequestInit);
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+
+      if (err.name === "AbortError" || err instanceof VelocityError) {
+        // Figure out which signal fired
+        if (timeoutAC.signal.aborted) {
+          throw new VelocityError(
+            "TimeoutError",
+            `Request timed out after ${timeoutMs}ms`,
+            mergedConfig,
+          );
+        }
+        if (externalSignal?.aborted) {
+          throw new VelocityError(
+            "CancelError",
+            "Request was cancelled",
+            mergedConfig,
+          );
+        }
+        if (this._pollingAC?.signal.aborted) {
+          throw new VelocityError(
+            "CancelError",
+            "Polling was cancelled",
+            mergedConfig,
+          );
+        }
+      }
+
+      throw new VelocityError(
+        "NetworkError",
+        err.message ?? "Network request failed",
+        mergedConfig,
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    // ── 6. Parse body ─────────────────────────────────────────────────────────
+
+    const data = await this._parseBody<T>(res, mergedConfig);
+
+    // ── 7. Build response object ──────────────────────────────────────────────
+
+    let response: VelocityResponse<T> = {
+      data,
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+      config: mergedConfig,
+      ok: res.ok,
+    };
+
+    // ── 8. Run response interceptors ──────────────────────────────────────────
+
+    for (const hook of this._responseHooks) {
+      try {
+        response = (await hook(response)) as VelocityResponse<T>;
+      } catch (hookErr) {
+        // Log but don't swallow — the response is still returned
+        console.warn("[Velocity] Response interceptor threw:", hookErr);
+      }
+    }
+
+    // ── 9. Throw on HTTP errors (non-2xx) ─────────────────────────────────────
+
+    if (!res.ok) {
+      throw new VelocityError(
+        "HTTPError",
+        `HTTP ${res.status}: ${res.statusText}`,
+        mergedConfig,
+        response,
+      );
+    }
+
+    // ── 10. Polling loop ───────────────────────────────────────────────────────
+
+    if (isNonEmptyObject(mergedConfig.poll)) {
+      return this._poll<T>(mergedConfig, response, 1);
+    }
+
+    return response;
+  }
+
+  // ── Polling loop ────────────────────────────────────────────────────────────
+
+  private async _poll<T>(
+    config: VelocityConfig<T>,
+    firstResponse: VelocityResponse<T>,
+    attempt: number,
+  ): Promise<VelocityResponse<T>> {
+    const poll = config.poll as PollOptions<T>;
+    const {
+      validate,
+      interval = DEFAULT_POLL_INTERVAL,
+      maxAttempts = DEFAULT_MAX_ATTEMPTS,
+    } = poll;
+
+    let currentResponse = firstResponse;
+    let currentAttempt = attempt;
+
+    while (true) {
+      // Check stop condition
+      let isDone = false;
+      try {
+        isDone = await validate(
+          currentResponse.data,
+          currentResponse,
+          currentAttempt,
+        );
+      } catch (validateErr) {
+        throw new VelocityError(
+          "PollingError",
+          `Poll validate threw on attempt ${currentAttempt}: ${(validateErr as Error).message}`,
+          config,
+          currentResponse,
+          currentAttempt,
+        );
+      }
+
+      if (isDone) return currentResponse;
+
+      if (currentAttempt >= maxAttempts) {
+        throw new VelocityError(
+          "PollingError",
+          `Polling exceeded maxAttempts (${maxAttempts})`,
+          config,
+          currentResponse,
+          currentAttempt,
+        );
+      }
+
+      // Wait — respects polling cancellation
+      const cancelSignal = this._pollingAC?.signal;
+      await sleep(interval, cancelSignal);
+
+      // Re-fetch
+      currentAttempt++;
+      currentResponse = await this._executeSingle<T>(
+        config,
+        true,
+        currentAttempt,
+      );
+    }
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  /** Merges two HeadersInit values, with `override` winning on conflicts. */
+  private _mergeHeaders(base?: HeadersInit, override?: HeadersInit): Headers {
+    const merged = new Headers(base);
+    if (override) {
+      new Headers(override).forEach((value, key) => {
+        merged.set(key, value);
+      });
+    }
+    return merged;
+  }
+
+  /** Parses the response body according to `responseType` or Content-Type. */
+  private async _parseBody<T>(
+    res: Response,
+    config: VelocityConfig<T>,
+  ): Promise<T> {
+    const { responseType } = config;
+
+    if (responseType === "blob") return res.blob() as Promise<T>;
+    if (responseType === "arrayBuffer") return res.arrayBuffer() as Promise<T>;
+    if (responseType === "text") return res.text() as Promise<T>;
+
+    // json or auto-detect
+    const text = await res.text();
+
+    if (text.trim() === "") return null as T;
+
+    const contentType = res.headers.get("content-type") ?? "";
+    const isJson =
+      responseType === "json" ||
+      (!responseType && contentType.includes("application/json"));
+
+    if (isJson) {
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        return text as unknown as T;
+      }
+    }
+
+    return text as unknown as T;
+  }
+
+  /** Serialises `data` to a fetch-compatible body. */
+  private _prepareBody(data: any): BodyInit | undefined {
     if (data === undefined || data === null) return undefined;
-    if (typeof FormData !== "undefined" && data instanceof FormData)
+    if (typeof FormData !== "undefined" && data instanceof FormData) {
       return data;
+    }
     if (
       typeof URLSearchParams !== "undefined" &&
       data instanceof URLSearchParams
-    )
+    ) {
       return data;
+    }
+    if (data instanceof ArrayBuffer) {
+      return data;
+    }
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      return data;
+    }
+
     if (typeof data === "object") {
       try {
         return JSON.stringify(data);
-      } catch (error) {
-        console.error("Failed to stringify body:", error);
+      } catch (err) {
+        console.warn("[Velocity] Could not serialise body:", err);
         return data;
       }
     }
     return data;
   }
 
+  // ── HTTP convenience methods ────────────────────────────────────────────────
+
+  get = <T = any>(
+    url: string,
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({ ...config, method: "GET", url });
+
   post = <T = any>(
     url: string,
     data?: any,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({
       ...config,
       method: "POST",
       url,
-      body: this.prepareBody(data),
+      body: this._prepareBody(data),
     });
-  }
 
   put = <T = any>(
     url: string,
     data?: any,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({
       ...config,
       method: "PUT",
       url,
-      body: this.prepareBody(data),
+      body: this._prepareBody(data),
     });
-  }
 
   patch = <T = any>(
     url: string,
     data?: any,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({
       ...config,
       method: "PATCH",
       url,
-      body: this.prepareBody(data),
+      body: this._prepareBody(data),
     });
-  }
 
   delete = <T = any>(
     url: string,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({ ...config, method: "DELETE", url });
-  }
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({ ...config, method: "DELETE", url });
 
   head = <T = any>(
     url: string,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({ ...config, method: "HEAD", url });
-  }
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({ ...config, method: "HEAD", url });
 
   options = <T = any>(
     url: string,
-    config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> => {
-    return this.request<T>({ ...config, method: "OPTIONS", url });
-  }
+    config?: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> =>
+    this.request<T>({ ...config, method: "OPTIONS", url });
 }
