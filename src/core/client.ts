@@ -246,10 +246,10 @@ export class Velocity {
     }
   }
 
-  get<T = any>(
+  get = <T = any>(
     url: string,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({ ...config, method: "GET", url });
   }
 
@@ -273,11 +273,11 @@ export class Velocity {
     return data;
   }
 
-  post<T = any>(
+  post = <T = any>(
     url: string,
     data?: any,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({
       ...config,
       method: "POST",
@@ -286,11 +286,11 @@ export class Velocity {
     });
   }
 
-  put<T = any>(
+  put = <T = any>(
     url: string,
     data?: any,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({
       ...config,
       method: "PUT",
@@ -299,11 +299,11 @@ export class Velocity {
     });
   }
 
-  patch<T = any>(
+  patch = <T = any>(
     url: string,
     data?: any,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({
       ...config,
       method: "PATCH",
@@ -312,24 +312,24 @@ export class Velocity {
     });
   }
 
-  delete<T = any>(
+  delete = <T = any>(
     url: string,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({ ...config, method: "DELETE", url });
   }
 
-  head<T = any>(
+  head = <T = any>(
     url: string,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({ ...config, method: "HEAD", url });
   }
 
-  options<T = any>(
+  options = <T = any>(
     url: string,
     config?: VelocityConfig,
-  ): Promise<VelocityResponse<T>> {
+  ): Promise<VelocityResponse<T>> => {
     return this.request<T>({ ...config, method: "OPTIONS", url });
   }
 }
