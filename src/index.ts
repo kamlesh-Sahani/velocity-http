@@ -2,8 +2,9 @@
 //  Velocity – Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Velocity } from "./core/client";
+import { Velocity } from "./velocity";
+import { VelocityError } from "./types";
 
+export { Velocity, VelocityError };
 export * from "./types";
-export { Velocity };
 export default Velocity;
