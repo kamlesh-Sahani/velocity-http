@@ -3,7 +3,12 @@
 import { requestExecutor } from "./core/requestExecutor";
 import { pollHandler } from "./features/poolHandler";
 import { retryHandler } from "./features/retryHandler";
-import { VelocityConfig, VelocityResponse, RequestHook, ResponseHook } from "./types";
+import {
+  VelocityConfig,
+  VelocityResponse,
+  RequestHook,
+  ResponseHook,
+} from "./types";
 import { prepareBody } from "./utils/utils";
 
 export class Velocity {
@@ -47,14 +52,16 @@ export class Velocity {
 
   // ── Core Request ──
 
-  async request<T = any>(config: VelocityConfig<T>): Promise<VelocityResponse<T>> {
-    const mergedConfig = { 
-      ...this.config, 
+  request = async <T = any>(
+    config: VelocityConfig<T>,
+  ): Promise<VelocityResponse<T>> => {
+    const mergedConfig = {
+      ...this.config,
       ...config,
-      headers: { 
-        ...this._toRecord(this.config.headers), 
-        ...this._toRecord(config.headers) 
-      }
+      headers: {
+        ...this._toRecord(this.config.headers),
+        ...this._toRecord(config.headers),
+      },
     };
 
     const isPolling = !!mergedConfig.poll;
@@ -84,44 +91,52 @@ export class Velocity {
         this._pollingAC = undefined;
       }
     }
-  }
+  };
 
   // ── Helpers ──
 
-  get<T = any>(url: string, config?: VelocityConfig<T>) {
+  get = <T = any>(url: string, config?: VelocityConfig<T>) => {
     return this.request<T>({ ...config, method: "GET", url });
-  }
+  };
 
-  post<T = any>(url: string, data?: any, config?: VelocityConfig<T>) {
+  post = <T = any>(url: string, data?: any, config?: VelocityConfig<T>) => {
     return this.request<T>({
       ...config,
       method: "POST",
       url,
       body: prepareBody(data),
     });
-  }
+  };
 
-  put<T = any>(url: string, data?: any, config?: VelocityConfig<T>) {
+  put = <T = any>(url: string, data?: any, config?: VelocityConfig<T>) => {
     return this.request<T>({
       ...config,
       method: "PUT",
       url,
       body: prepareBody(data),
     });
-  }
+  };
 
-  patch<T = any>(url: string, data?: any, config?: VelocityConfig<T>) {
+  patch = <T = any>(url: string, data?: any, config?: VelocityConfig<T>) => {
     return this.request<T>({
       ...config,
       method: "PATCH",
       url,
       body: prepareBody(data),
     });
-  }
+  };
 
-  delete<T = any>(url: string, config?: VelocityConfig<T>) {
+  delete = <T = any>(url: string, config?: VelocityConfig<T>) => {
     return this.request<T>({ ...config, method: "DELETE", url });
-  }
+  };
+
+  head = <T = any>(url: string, config?: VelocityConfig<T>) => {
+    return this.request<T>({ ...config, method: "HEAD", url });
+  };
+
+  options = <T = any>(url: string, config?: VelocityConfig<T>) => {
+    return this.request<T>({ ...config, method: "OPTIONS", url });
+  };
 
   private _toRecord(headers?: HeadersInit): Record<string, string> {
     if (!headers) return {};
